@@ -1,3 +1,5 @@
+A fork of [Apache Thrift](https://github.com/apache/thrift) `v0.12.0` that supports Objective-C `NSSecureCoding`.
+
 Apache Thrift
 =============
 
