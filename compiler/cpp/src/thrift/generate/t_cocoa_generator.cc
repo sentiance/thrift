@@ -117,6 +117,7 @@ public:
                                             bool is_xception = false,
                                             bool is_result = false);
   void generate_cocoa_struct_initializer_signature(std::ostream& out, t_struct* tstruct);
+  void generate_cocoa_struct_supports_secure_coding_method(std::ostream& out);
   void generate_cocoa_struct_init_with_coder_method(ostream& out,
                                                     t_struct* tstruct,
                                                     bool is_exception);
@@ -218,6 +219,9 @@ public:
   std::string cocoa_prefix();
   std::string cocoa_imports();
   std::string cocoa_thrift_imports();
+  std::string decoder_method_name(t_type* ttype);
+  std::string decoder_class(t_type *ttype);
+  std::string decoder_container_element_type_name(t_type* etype);
   std::string type_name(t_type* ttype, bool class_ref = false, bool needs_mutable = false);
   std::string element_type_name(t_type* ttype);
   std::string base_type_name(t_base_type* tbase);
@@ -592,7 +596,7 @@ void t_cocoa_generator::generate_cocoa_struct_interface(ostream& out,
   } else {
     out << "NSObject ";
   }
-  out << "<TBase, NSCoding, NSCopying> " << endl;
+  out << "<TBase, NSSecureCoding, NSCopying> " << endl;
 
   out << endl;
 
@@ -645,7 +649,7 @@ void t_cocoa_generator::generate_cocoa_struct_initializer_signature(ostream& out
 
 /**
  * Generate the initWithCoder method for this struct so it's compatible with
- * the NSCoding protocol
+ * the NSSecureCoding protocol
  */
 void t_cocoa_generator::generate_cocoa_struct_init_with_coder_method(ostream& out,
                                                                      t_struct* tstruct,
@@ -655,7 +659,7 @@ void t_cocoa_generator::generate_cocoa_struct_init_with_coder_method(ostream& ou
   scope_up(out);
 
   if (is_exception) {
-    // NSExceptions conform to NSCoding, so we can call super
+    // NSExceptions conform to NSSecureCoding, so we can call super
     indent(out) << "self = [super initWithCoder: decoder];" << endl;
   } else {
     indent(out) << "self = [super init];" << endl;
@@ -674,7 +678,7 @@ void t_cocoa_generator::generate_cocoa_struct_init_with_coder_method(ostream& ou
     scope_up(out);
     out << indent() << "_" << (*m_iter)->get_name() << " = ";
     if (type_can_be_null(t)) {
-      out << "[decoder decodeObjectForKey: @\"" << (*m_iter)->get_name() << "\"];"
+      out << "[decoder " << decoder_method_name(t) << ":" << decoder_class(t) << " forKey: @\"" << (*m_iter)->get_name() << "\"];"
           << endl;
     } else if (t->is_enum()) {
       out << "[decoder decodeIntForKey: @\"" << (*m_iter)->get_name() << "\"];" << endl;
@@ -717,7 +721,7 @@ void t_cocoa_generator::generate_cocoa_struct_init_with_coder_method(ostream& ou
 
 /**
  * Generate the encodeWithCoder method for this struct so it's compatible with
- * the NSCoding protocol
+ * the NSSecureCoding protocol
  */
 void t_cocoa_generator::generate_cocoa_struct_encode_with_coder_method(ostream& out,
                                                                        t_struct* tstruct,
@@ -727,7 +731,7 @@ void t_cocoa_generator::generate_cocoa_struct_encode_with_coder_method(ostream& 
   scope_up(out);
 
   if (is_exception) {
-    // NSExceptions conform to NSCoding, so we can call super
+    // NSExceptions conform to NSSecureCoding, so we can call super
     out << indent() << "[super encodeWithCoder: encoder];" << endl;
   }
 
@@ -778,6 +782,20 @@ void t_cocoa_generator::generate_cocoa_struct_encode_with_coder_method(ostream& 
     }
     scope_down(out);
   }
+
+  scope_down(out);
+  out << endl;
+}
+
+/**
+ * Generate the supportsSecureCoding method for this struct so it's compatible with
+ * the NSSecureCoding protocol
+ */
+void t_cocoa_generator::generate_cocoa_struct_supports_secure_coding_method(ostream& out) {
+  indent(out) << "+ (BOOL) supportsSecureCoding" << endl;
+  scope_up(out);
+
+  out << indent() << "return YES;" << endl;
 
   scope_down(out);
   out << endl;
@@ -994,9 +1012,11 @@ void t_cocoa_generator::generate_cocoa_struct_implementation(ostream& out,
     out << endl;
   }
 
-  // initWithCoder for NSCoding
+  // initWithCoder for NSSecureCoding
   generate_cocoa_struct_init_with_coder_method(out, tstruct, is_exception);
-  // encodeWithCoder for NSCoding
+  // supportsSecureCoding for NSSecureCoding
+  generate_cocoa_struct_supports_secure_coding_method(out);
+  // encodeWithCoder for NSSecureCoding
   generate_cocoa_struct_encode_with_coder_method(out, tstruct, is_exception);
   // hash and isEqual for NSObject
   generate_cocoa_struct_hash_method(out, tstruct);
@@ -2582,6 +2602,113 @@ void t_cocoa_generator::generate_serialize_list_element(ostream& out,
                                                         string listName) {
   t_field efield(tlist->get_elem_type(), "[" + listName + " objectAtIndex: " + index + "]");
   generate_serialize_field(out, &efield, unbox(efield.get_type(), efield.get_name()));
+}
+
+/**
+ * Returns the appropriate decodeObjectOf* method for the given t_type.
+ * 
+ * @param ttype The type
+ */
+string t_cocoa_generator::decoder_method_name(t_type* ttype) {
+  if (ttype->is_set() || ttype->is_list()) {
+    return "decodeObjectOfClasses";
+  } else {
+    return "decodeObjectOfClass";
+  }
+}
+
+/**
+ * Returns the Objective-C class type(s) that the secure decoder will decode to.
+ * 
+ * @param ttype The type
+ */
+string t_cocoa_generator::decoder_class(t_type* ttype) {
+  if (ttype->is_typedef()) {
+    string name = ttype->get_name();
+    t_program* program = ttype->get_program();
+    return program ? (program->get_namespace("cocoa") + name) : name;
+  }
+
+  string result;
+  if (ttype->is_base_type()) {
+    t_base_type* base_type = (t_base_type*)ttype;
+    if (base_type->get_base() == t_base_type::TYPE_STRING) {
+      if (base_type->is_binary()) {
+        return "[NSData class]";
+      } else {
+        return "[NSString class]";
+      }
+    } else {
+      throw "compiler error: base type " + t_base_type::t_base_name(base_type->get_base()) + " does not have a decoder class";
+    }
+  } else if (ttype->is_enum()) {
+    return cocoa_prefix_ + ttype->get_name();
+  } else if (ttype->is_map()) {
+    t_map *map = (t_map *)ttype;
+    result = "[NSDictionary class]";
+  } else if (ttype->is_set()) {
+    t_set *set = (t_set *)ttype;
+    result = "[NSSet setWithObjects:[NSSet class], [" + decoder_container_element_type_name(set->get_elem_type()) + " class], nil]";
+  } else if (ttype->is_list()) {
+    t_list *list = (t_list *)ttype;
+    result = "[NSSet setWithObjects:[NSArray class], [" + decoder_container_element_type_name(list->get_elem_type()) + " class], nil]";
+  } else {
+    // Check for prefix
+    t_program* program = ttype->get_program();
+    if (program != NULL) {
+      result = "[" + program->get_namespace("cocoa") + ttype->get_name() + " class]";
+    } else {
+      result = "[" + ttype->get_name() + " class]";
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Returns the Objective-C element type name of a container type, that will be used during decoding.
+ * 
+ * @param ttype The type
+ */ 
+string t_cocoa_generator::decoder_container_element_type_name(t_type* etype) {
+  t_type* ttype = etype->get_true_type();
+
+  if (etype->is_typedef() && type_can_be_null(ttype)) {
+    return type_name(etype);
+  }
+
+  string result;
+  if (ttype->is_base_type()) {
+    t_base_type* tbase = (t_base_type*)ttype;
+    switch (tbase->get_base()) {
+    case t_base_type::TYPE_STRING:
+      if (tbase->is_binary()) {
+        result = "NSData";
+      }
+      else {
+        result = "NSString";
+      }
+      break;
+    default:
+      result = "NSNumber";
+      break;
+    }
+  } else if (ttype->is_enum()) {
+      result = "NSNumber";
+  } else if (ttype->is_map()) {
+    t_map *map = (t_map *)ttype;
+    result = "NSDictionary";
+  } else if (ttype->is_set()) {
+    t_set *set = (t_set *)ttype;
+    result = "NSSet";
+  } else if (ttype->is_list()) {
+    t_list *list = (t_list *)ttype;
+    result = "NSArray";
+  } else if (ttype->is_struct() || ttype->is_xception()) {
+    result = cocoa_prefix_ + ttype->get_name();
+  }
+
+  return result;
 }
 
 /**
