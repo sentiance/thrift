@@ -2610,7 +2610,7 @@ void t_cocoa_generator::generate_serialize_list_element(ostream& out,
  * @param ttype The type
  */
 string t_cocoa_generator::decoder_method_name(t_type* ttype) {
-  if (ttype->is_set() || ttype->is_list()) {
+  if (ttype->is_set() || ttype->is_list() || ttype->is_map()) {
     return "decodeObjectOfClasses";
   } else {
     return "decodeObjectOfClass";
@@ -2645,7 +2645,7 @@ string t_cocoa_generator::decoder_class(t_type* ttype) {
     return cocoa_prefix_ + ttype->get_name();
   } else if (ttype->is_map()) {
     t_map *map = (t_map *)ttype;
-    result = "[NSDictionary class]";
+    result = "[NSSet setWithObjects:[NSDictionary class], [" + decoder_container_element_type_name(map->get_key_type()) + " class], [" + decoder_container_element_type_name(map->get_val_type()) + " class], nil]";
   } else if (ttype->is_set()) {
     t_set *set = (t_set *)ttype;
     result = "[NSSet setWithObjects:[NSSet class], [" + decoder_container_element_type_name(set->get_elem_type()) + " class], nil]";
