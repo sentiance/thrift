@@ -221,8 +221,10 @@ public:
   std::string cocoa_thrift_imports();
   std::string decoder_method_name(t_type* ttype);
   std::string decoder_class(t_type *ttype);
-  std::string decoder_container_element_type_name(t_type* etype);
   std::string type_name(t_type* ttype, bool class_ref = false, bool needs_mutable = false);
+  std::string flatten_type_names(t_type* etype);
+  std::string extract_type_names(t_type* etype, std::set<string> &type_names_set);
+  std::string convert_base_type(t_type* etype);
   std::string element_type_name(t_type* ttype);
   std::string base_type_name(t_base_type* tbase);
   std::string declare_property(t_field* tfield);
@@ -2645,13 +2647,13 @@ string t_cocoa_generator::decoder_class(t_type* ttype) {
     return cocoa_prefix_ + ttype->get_name();
   } else if (ttype->is_map()) {
     t_map *map = (t_map *)ttype;
-    result = "[NSSet setWithObjects:[NSDictionary class], [" + decoder_container_element_type_name(map->get_key_type()) + " class], [" + decoder_container_element_type_name(map->get_val_type()) + " class], nil]";
+    result = "[NSSet setWithObjects:" + flatten_type_names(ttype) + ", nil]";
   } else if (ttype->is_set()) {
     t_set *set = (t_set *)ttype;
-    result = "[NSSet setWithObjects:[NSSet class], [" + decoder_container_element_type_name(set->get_elem_type()) + " class], nil]";
+    result = "[NSSet setWithObjects:" + flatten_type_names(ttype) + ", nil]";
   } else if (ttype->is_list()) {
     t_list *list = (t_list *)ttype;
-    result = "[NSSet setWithObjects:[NSArray class], [" + decoder_container_element_type_name(list->get_elem_type()) + " class], nil]";
+    result = "[NSSet setWithObjects:" + flatten_type_names(ttype) + ", nil]";
   } else {
     // Check for prefix
     t_program* program = ttype->get_program();
@@ -2660,52 +2662,6 @@ string t_cocoa_generator::decoder_class(t_type* ttype) {
     } else {
       result = "[" + ttype->get_name() + " class]";
     }
-  }
-
-  return result;
-}
-
-/**
- * Returns the Objective-C element type name of a container type, that will be used during decoding.
- * 
- * @param ttype The type
- */ 
-string t_cocoa_generator::decoder_container_element_type_name(t_type* etype) {
-  t_type* ttype = etype->get_true_type();
-
-  if (etype->is_typedef() && type_can_be_null(ttype)) {
-    return type_name(etype);
-  }
-
-  string result;
-  if (ttype->is_base_type()) {
-    t_base_type* tbase = (t_base_type*)ttype;
-    switch (tbase->get_base()) {
-    case t_base_type::TYPE_STRING:
-      if (tbase->is_binary()) {
-        result = "NSData";
-      }
-      else {
-        result = "NSString";
-      }
-      break;
-    default:
-      result = "NSNumber";
-      break;
-    }
-  } else if (ttype->is_enum()) {
-      result = "NSNumber";
-  } else if (ttype->is_map()) {
-    t_map *map = (t_map *)ttype;
-    result = "NSDictionary";
-  } else if (ttype->is_set()) {
-    t_set *set = (t_set *)ttype;
-    result = "NSSet";
-  } else if (ttype->is_list()) {
-    t_list *list = (t_list *)ttype;
-    result = "NSArray";
-  } else if (ttype->is_struct() || ttype->is_xception()) {
-    result = cocoa_prefix_ + ttype->get_name();
   }
 
   return result;
@@ -2755,6 +2711,103 @@ string t_cocoa_generator::type_name(t_type* ttype, bool class_ref, bool needs_mu
   if (!class_ref) {
     result += " *";
   }
+  return result;
+}
+
+/**
+ * Fill the set with Objective-C types recursively
+ *
+ * @param ttype the type
+ * @param type_names_set reference of the set
+ */
+string t_cocoa_generator::extract_type_names(t_type* etype, std::set<string> &type_names_set) {
+  t_type* ttype = etype->get_true_type();
+
+  string result;
+
+  if (etype->is_typedef() && type_can_be_null(ttype)) {
+    return type_name(etype);
+  }
+
+  if (ttype->is_base_type()) {
+    result = convert_base_type(ttype);
+  } else if (ttype->is_map()) {
+    t_map *map = (t_map *)ttype;
+    type_names_set.insert("NSDictionary");
+    type_names_set.insert(extract_type_names(map->get_key_type(), type_names_set));
+    type_names_set.insert(extract_type_names(map->get_val_type(), type_names_set));
+  } else if (ttype->is_set()) {
+    t_set *set = (t_set *)ttype;
+    type_names_set.insert("NSSet");
+    type_names_set.insert(extract_type_names(set->get_elem_type(), type_names_set));
+  } else if (ttype->is_list()) {
+    t_list *list = (t_list *)ttype;
+    type_names_set.insert("NSArray");
+    type_names_set.insert(extract_type_names(list->get_elem_type(), type_names_set));
+  } else if (ttype->is_struct() || ttype->is_xception()) {
+    result = cocoa_prefix_ + ttype->get_name();
+  } else if (ttype->is_enum()) {
+    result = "NSNumber";
+  } else {
+    result = "BESULT";
+  }
+  return result;
+}
+
+
+/**
+ * Fill the set with Objective-C types
+ *
+ * @param ttype the type
+ */
+string t_cocoa_generator::convert_base_type(t_type* etype) {
+  t_type* ttype = etype->get_true_type();
+
+  if (etype->is_typedef() && type_can_be_null(ttype)) {
+    return type_name(etype);
+  }
+
+  if (ttype->is_base_type()) {
+    t_base_type* tbase = (t_base_type*)ttype;
+    switch (tbase->get_base()) {
+    case t_base_type::TYPE_STRING:
+      if (tbase->is_binary()) {
+        return "NSData";
+      }
+      else {
+        return "NSString";
+      }
+    default:
+      return "NSNumber";
+    }
+  }
+  return "";
+}
+
+
+/**
+ * Returns the Objective-C types separated by comma
+ *
+ * @param ttype the type
+ */
+string t_cocoa_generator::flatten_type_names(t_type* etype) {
+  std::set<string> type_names_set;
+  string result;
+
+  t_type* ttype = etype->get_true_type();
+  if (etype->is_typedef() && type_can_be_null(ttype)) {
+    return etype->get_name();
+  }
+
+  extract_type_names(etype, type_names_set);
+
+  for (auto item : type_names_set) {
+    if (item != "") {
+      result = result + "[" + item + " class], ";
+    }
+  } 
+  result = result.substr(0, result.size()-2);
+
   return result;
 }
 
